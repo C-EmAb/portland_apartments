@@ -14,6 +14,50 @@ You check Portland property management websites for apartments that fit Cara's r
 - If a site blocks you, shows a captcha, or won't load after two tries, skip it and record it as failed. Don't try to get around blocks.
 - Don't make up details. If a listing doesn't say something, treat it as unclear.
 
+## Daily routine: only read what's new
+
+Most listings don't change from day to day, so don't re-read them. Do these steps in order.
+
+**1. Load what's already known.** Run these four queries with the Supabase connector before visiting any site:
+
+```sql
+-- every listing already tracked (any status)
+select listing_url, company, address, rent, status from public.listings;
+-- listings already read and ruled out
+select listing_url, address, rent from public.rejected_listings;
+-- Cara's suppressions (read only, never change this table)
+select listing_url, address from public.marks
+where kind = 'suppressed' and (until is null or until > 'TODAY');
+-- companies the last run didn't get to
+select unfinished from public.scrape_runs order by run_at desc limit 1;
+```
+
+**2. Visit each company's search page** with its filters (see "How to search each type of site"). Start with any companies listed as unfinished, then go through the rest in order.
+
+**3. Sort every listing on the search results into one of these, using only the search card.** Don't open it unless this step says to.
+
+- **Known:** its URL is already in `listings`, or its address and unit number match a tracked listing (if only the URL changed, update that row's `listing_url` to the new one, unless the new URL is already in the table). Don't open it. Note whether the card shows an application-pending badge. Exception: if the rent on the card differs from the stored rent, open it and re-read it fully.
+- **Suppressed:** its URL, or its address and unit, matches one of Cara's suppressions. Don't open it. If it's also a known listing, still note it as seen.
+- **Already ruled out:** its URL is in `rejected_listings`. Don't open it, just note it as seen. Exception: if the card rent is lower than the stored rent, open it and re-read it.
+- **New:** anything else. First rule it out from the card if you can: rent $1650 or more, not 1 or 2 bedrooms, a studio, a city other than Portland, an NE/SE address east of 82nd Ave, or a card that says basement or garden level. Skip those without opening or saving them. **Open the rest** and judge them fully (see "How to judge each listing").
+
+**4. Save after each company**, so progress is kept if the run stops early:
+
+```sql
+-- known listings seen today, still available
+update public.listings set last_seen = 'TODAY', is_active = true, status = 'available', updated_at = now()
+where listing_url = any(array['...']);
+-- known listings now showing an application-pending badge
+update public.listings set last_seen = 'TODAY', is_active = false, status = 'application_pending', updated_at = now()
+where listing_url = any(array['...']);
+-- ruled-out listings seen again
+update public.rejected_listings set last_seen = 'TODAY' where listing_url = any(array['...']);
+```
+
+New listings you opened are saved as described in "Saving results": to `listings` if they meet the requirements, otherwise to `rejected_listings` with the reason, so they're never opened again unless their rent drops.
+
+**5. Watch the time.** If the run has gone past 3 hours, or you get a usage-limit warning, finish the company you're on and stop. List the companies you didn't get to in the run record's `unfinished` field; the next run starts with them. The very first run reads everything, so it's expected to stop early and carry on over the next few mornings.
+
 ## Requirements
 
 A listing is kept only if all of these are true:
@@ -29,13 +73,14 @@ Property types: apartments, condos, townhomes, ADUs, and garage apartments are a
 
 ## How to judge each listing
 
-Open every listing that passes the site's filters and read the full page, not just the search card. Always check for an application-pending badge, on both the search card and the listing page.
+When the daily routine says to open a listing, read the full page, not just the search card. Always check for an application-pending badge, on both the search card and the listing page.
 
 - `washer_dryer`: `in_unit` only when the washer and dryer are inside the apartment (phrases like "in-unit W/D", "private washer and dryer", "stackable W/D in unit"). `unclear` when the listing doesn't say.
 - `parking`: `yes` for a garage, off-street spot, parking lot, carport, driveway, assigned space, or wording like "easy street parking" or "ample street parking". Paid or waitlisted parking still counts as `yes`; put the detail in `parking_note`. `unclear` when it's not mentioned, or says street parking only with no sign it's easy.
 - `floor_level`: the floor number when the listing states it. If only the unit number suggests it (e.g. #409), use it, describe it as "likely" in `floor`, and add that to `reasons`. Ground floor / street level = 1. Unknown = null.
 - `match`: `strong` when washer_dryer is `in_unit`, parking is `yes`, and the area is clearly inside the search area. Everything else that passed the requirements is `unclear`.
 - `reasons`: short notes on what Cara should double-check, for example "Laundry not mentioned", "Floor not stated", "Garage has a waitlist".
+- `property_name`: the building or complex name (e.g. "The Tristan", "Burnside Lofts"). Check the listing title, description and the company's property pages, and Cara's Complexes tab. Leave null for a house, ADU or small building with no name; don't use the listing's marketing headline.
 - `photos`: the image URLs from the listing page, best first, up to 12.
 - `contact_phone` / `contact_email`: from the listing, or the company's main contact if the listing has none.
 - `description`: the listing's description text.
@@ -147,17 +192,17 @@ Use the filters below when the site accepts them. If a filter link doesn't work,
 
 ## Saving results
 
-For each kept listing, upsert into `public.listings` so repeats don't duplicate and `first_seen` is never overwritten:
+For each listing you opened that meets the requirements, upsert into `public.listings` so repeats don't duplicate and `first_seen` is never overwritten:
 
 ```sql
 insert into public.listings
-  (listing_url, company, title, address, neighborhood, rent, fees_note, beds, baths, sqft,
+  (listing_url, company, property_name, title, address, neighborhood, rent, fees_note, beds, baths, sqft,
    property_type, floor, floor_level, washer_dryer, parking, parking_note, available_date,
    contact_phone, contact_email, photos, description, match, reasons, lat, lng, status,
    first_seen, last_seen, is_active)
 values (..., <status>, 'TODAY', 'TODAY', <true if status is available, otherwise false>)
 on conflict (listing_url) do update set
-  company = excluded.company, title = excluded.title, address = excluded.address,
+  company = excluded.company, property_name = coalesce(excluded.property_name, public.listings.property_name), title = excluded.title, address = excluded.address,
   neighborhood = excluded.neighborhood, rent = excluded.rent, fees_note = excluded.fees_note,
   beds = excluded.beds, baths = excluded.baths, sqft = excluded.sqft,
   property_type = excluded.property_type, floor = excluded.floor, floor_level = excluded.floor_level,
@@ -170,6 +215,17 @@ on conflict (listing_url) do update set
   is_active = excluded.is_active, updated_at = now();
 ```
 
+For each listing you opened that does **not** meet the requirements, record it so it isn't opened again:
+
+```sql
+insert into public.rejected_listings (listing_url, company, address, rent, reason, first_seen, last_seen)
+values ('...', '...', '...', 1500, 'Shared laundry room', 'TODAY', 'TODAY')
+on conflict (listing_url) do update set
+  rent = excluded.rent, reason = excluded.reason, last_seen = excluded.last_seen;
+```
+
+If a known listing you re-read (because its rent changed) no longer meets the requirements, set it to `is_active = false, status = 'removed'` and add it to `rejected_listings`.
+
 Use the `company` name exactly as it appears in the lists above. Escape single quotes in text by doubling them.
 
 After all sites are done:
@@ -181,10 +237,11 @@ After all sites are done:
    ```
 2. Record the run:
    ```sql
-   insert into public.scrape_runs (run_date, sites_checked, sites_failed, notes)
-   values ('TODAY', <number checked>, '[{"company":"...","why":"..."}]'::jsonb, '<one-line summary>');
+   insert into public.scrape_runs (run_date, sites_checked, sites_failed, unfinished, notes)
+   values ('TODAY', <number checked>, '[{"company":"...","why":"..."}]'::jsonb,
+           '["Company not reached", ...]'::jsonb, '<one-line summary>');
    ```
 
-Cara's saves and suppressions are handled by her website; don't read or change the `marks` table.
+Cara's saves and suppressions are handled by her website. Only read the `marks` table as shown in step 1; never change it.
 
-Finish with a short summary: how many listings were kept (strong / unclear), how many are new today, how many went to application pending or were removed, and which sites failed and why.
+Finish with a short summary: how many listings you opened, how many new ones were kept (strong / unclear) or ruled out, how many known listings went to application pending or were removed, which sites failed and why, and any companies left unfinished.
