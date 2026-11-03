@@ -66,6 +66,9 @@ legend { font-weight: 700; margin-bottom: 4px; }
 .rgrid select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
 .rfoot { display: flex; align-items: end; }
 
+.slidehead { margin: 0 0 16px; }
+.slidehead h2 { font: 700 clamp(1.8rem, 4vw, 2.6rem)/1.08 var(--display); letter-spacing: -0.02em; margin: 0; }
+.slidehead p { margin: 4px 0 0; color: var(--muted); font-size: 1.05rem; }
 .deck { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 26px; }
 @media (max-width: 860px) { .deck { grid-template-columns: 1fr; } }
 .frame { position: relative; aspect-ratio: 4 / 3; background: var(--line); border-radius: 14px; overflow: hidden; display: grid; place-items: center; color: var(--muted); }
@@ -266,6 +269,7 @@ const areaOf = l => { const m = String(l.address || '').match(/\b(NE|SE|NW|SW|N|
 const activeSuppressions = () => { const t = today(); return marks.filter(m => m.kind === 'suppressed' && (!m.until || m.until > t)); };
 const isSuppressed = l => activeSuppressions().some(m => m.listing_url === l.listing_url || (m.address && norm(m.address) === norm(l.address)));
 const isSaved = l => marks.some(m => m.kind === 'saved' && m.listing_url === l.listing_url);
+const nameOf = l => l.property_name || l.title || l.address || 'Unnamed listing';
 const bedLabel = l => l.beds == null ? '' : `${l.beds} bedroom${Number(l.beds) === 1 ? '' : 's'}`;
 
 function chips(l) {
@@ -378,10 +382,12 @@ function renderSlide() {
   photoPos = Math.min(photoPos, Math.max(photos.length - 1, 0));
   const saved = isSaved(l);
   $('#deckPos').textContent = `${pos + 1} of ${deck.length}`;
-  box.innerHTML = `<article class="deck" aria-label="Listing ${pos + 1} of ${deck.length}">
+  const sub = [nameOf(l) !== l.address ? l.address : '', l.company].filter(Boolean).join(', ');
+  box.innerHTML = `<header class="slidehead"><h2>${esc(nameOf(l))}</h2>${sub ? `<p>${esc(sub)}</p>` : ''}</header>
+  <article class="deck" aria-label="${esc(nameOf(l))}, listing ${pos + 1} of ${deck.length}">
     <div class="stage">
       <div class="frame">
-        ${photos.length ? `<img id="slidePh" src="${esc(photos[photoPos])}" alt="Photo ${photoPos + 1} of ${photos.length} for ${esc(l.address || 'this listing')}" referrerpolicy="no-referrer">` : '<span>No photos on this listing</span>'}
+        ${photos.length ? `<img id="slidePh" src="${esc(photos[photoPos])}" alt="Photo ${photoPos + 1} of ${photos.length} for ${esc(nameOf(l))}" referrerpolicy="no-referrer">` : '<span>No photos on this listing</span>'}
         ${isNew(l) ? '<span class="new">New</span>' : ''}
         ${photos.length > 1 ? `<button class="pnav prev" data-act="prevPhoto" aria-label="Previous photo">‹</button>
           <button class="pnav next" data-act="nextPhoto" aria-label="Next photo">›</button>
@@ -392,8 +398,7 @@ function renderSlide() {
     <div class="panel">
       <p class="rent">${money(l.rent)}<span>/mo</span></p>
       ${l.fees_note ? `<p class="fees">${esc(l.fees_note)}</p>` : ''}
-      <h2>${esc(l.address || l.title || 'Address not listed')}</h2>
-      <p class="meta">${esc(facts(l))}</p>
+      <p class="meta" style="margin-top:10px">${esc(facts(l))}</p>
       <ul class="chips">${chips(l)}</ul>
       ${(l.reasons || []).length ? `<h3>Check before applying</h3><ul class="reasons">${l.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
       <div class="contact">
@@ -435,7 +440,7 @@ function requireUser() {
   $('#signin').showModal();
   return false;
 }
-const snapshot = l => ({ listing_url: l.listing_url, title: l.title, address: l.address, company: l.company, photo: (l.photos || [])[0] || null });
+const snapshot = l => ({ listing_url: l.listing_url, title: nameOf(l), address: l.address, company: l.company, photo: (l.photos || [])[0] || null });
 
 async function toggleSave(l) {
   if (!requireUser()) return;
@@ -481,7 +486,8 @@ function renderSuppressed() {
   box.innerHTML = rows.map(m => `<div class="suprow">
       ${m.photo ? `<img src="${esc(m.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<div class="ph"></div>'}
       <div>
-        <p><b>${esc(m.address || m.title || m.listing_url)}</b></p>
+        <p><b>${esc(m.title || m.address || m.listing_url)}</b></p>
+        ${m.address && m.address !== m.title ? `<p>${esc(m.address)}</p>` : ''}
         <p class="meta">${esc(m.company || '')}${m.company ? '. ' : ''}${m.until ? `Suppressed until ${esc(shortDate(m.until))}.` : 'Suppressed permanently.'} ${live.has(m.listing_url) ? 'Still listed.' : 'No longer listed.'}
           <a href="${esc(safeUrl(m.listing_url))}" target="_blank" rel="noopener">Open the listing</a></p>
       </div>
@@ -516,7 +522,7 @@ function drawMarkers(fit) {
     const strong = l.match === 'strong';
     const m = L.circleMarker(c, { radius: 10, weight: 2, color: cssVar('--surface'), fillColor: strong ? cssVar('--pass') : cssVar('--maybe'), fillOpacity: .95 });
     m.bindPopup(`<div class="pop">${l.photos?.[0] ? `<img src="${esc(l.photos[0])}" alt="" referrerpolicy="no-referrer">` : ''}
-      <b>${money(l.rent)}</b>/mo<br>${esc(l.address || l.title || '')}<br>${esc(bedLabel(l))}${l.company ? `, ${esc(l.company)}` : ''}<br>
+      <b>${esc(nameOf(l))}</b><br>${money(l.rent)}/mo<br>${nameOf(l) !== l.address ? `${esc(l.address || '')}<br>` : ''}${esc(bedLabel(l))}${l.company ? `, ${esc(l.company)}` : ''}<br>
       <button class="btn" style="margin-top:8px" data-act="goSlide" data-i="${i}">View in Available Listings</button></div>`);
     m.addTo(layer); pts.push(c);
   });
