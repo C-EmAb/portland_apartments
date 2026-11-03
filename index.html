@@ -72,7 +72,8 @@ legend { font-weight: 700; margin-bottom: 4px; }
 .deck { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 26px; }
 @media (max-width: 860px) { .deck { grid-template-columns: 1fr; } }
 .frame { position: relative; aspect-ratio: 4 / 3; background: var(--line); border-radius: 14px; overflow: hidden; display: grid; place-items: center; color: var(--muted); }
-.frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.frame:has(img) { background: #111; }
+.frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .new { position: absolute; top: 14px; left: 14px; background: var(--accent); color: var(--accent-ink); font-weight: 700; padding: 3px 12px; border-radius: 999px; }
 .pnav { position: absolute; top: 50%; translate: 0 -50%; width: 46px; height: 46px; border-radius: 50%; border: none; background: rgb(0 0 0 / .55); color: #fff; font-size: 1.6rem; line-height: 1; cursor: pointer; }
 .pnav.prev { left: 12px; } .pnav.next { right: 12px; }
@@ -125,6 +126,20 @@ dialog::backdrop { background: rgb(10 16 18 / .6); }
 dialog h2 { font: 700 1.4rem var(--display); margin: 0 0 6px; }
 dialog input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); margin: 10px 0; }
 dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+
+.units { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.units button { border: 1px solid var(--line); background: var(--surface); border-radius: 9px; padding: 5px 11px; cursor: pointer; font-size: .95rem; }
+.units button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 700; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.tag { background: var(--maybe-bg); color: var(--maybe); border-radius: 999px; padding: 1px 10px; font-size: .9rem; }
+.taglist { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; max-height: 40vh; overflow-y: auto; }
+.taglist button { border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+.taglist button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.tagnew { display: flex; gap: 8px; align-items: center; }
+.tagnew input { margin: 8px 0; }
+.tagfilter { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 4px; }
+.tagfilter button { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 3px 12px; cursor: pointer; }
+.tagfilter button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 
 .toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); translate: -50% 0; background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: flex; gap: 14px; align-items: center; z-index: 2000; max-width: 92vw; }
 .toast button { background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer; font-weight: 700; }
@@ -207,6 +222,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
   </section>
 
   <section id="view-suppressed" hidden>
+    <div class="tagfilter" id="supTags"></div>
     <div class="sup" id="supList"></div>
   </section>
 </div>
@@ -221,6 +237,20 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
       <button class="btn primary" type="submit" id="signinSend">Email me a sign-in link</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="tagDlg" aria-labelledby="tagTitle">
+  <h2 id="tagTitle">Tags</h2>
+  <p class="meta" id="tagSub"></p>
+  <div class="taglist" id="tagList" aria-label="Your tags"></div>
+  <form class="tagnew" id="tagNewForm">
+    <input type="text" id="tagNew" placeholder="Create a new tag" aria-label="New tag" maxlength="40" autocomplete="off">
+    <button class="btn" type="submit">Add</button>
+  </form>
+  <div class="row">
+    <button class="btn" type="button" id="tagCancel">Cancel</button>
+    <button class="btn primary" type="button" id="tagOk">Save tags</button>
+  </div>
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
@@ -250,7 +280,7 @@ const sb = (cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY && window.supabase)
   ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY) : null;
 
 let user = null, listings = [], marks = [], latestDate = null, loaded = false;
-let deck = [], pos = 0, photoPos = 0, route = 'slides';
+let deck = [], pos = 0, unitPos = 0, photoPos = 0, route = 'slides';  // deck holds complexes: { key, units: [listing, ...] }
 
 // ---------- toast ----------
 let toastTimer;
@@ -269,6 +299,15 @@ const areaOf = l => { const m = String(l.address || '').match(/\b(NE|SE|NW|SW|N|
 const activeSuppressions = () => { const t = today(); return marks.filter(m => m.kind === 'suppressed' && (!m.until || m.until > t)); };
 const isSuppressed = l => activeSuppressions().some(m => m.listing_url === l.listing_url || (m.address && norm(m.address) === norm(l.address)));
 const isSaved = l => marks.some(m => m.kind === 'saved' && m.listing_url === l.listing_url);
+// Tags: one 'tagged' mark per listing holds its tags; a row with this url holds every tag you've created.
+const TAG_LIBRARY = 'tag-library';
+const tagsOf = url => (marks.find(m => m.kind === 'tagged' && m.listing_url === url)?.tags) || [];
+const allTags = () => [...new Set(marks.filter(m => m.kind === 'tagged').flatMap(m => m.tags || []))].sort((a, b) => a.localeCompare(b));
+const tagPills = url => { const t = tagsOf(url); return t.length ? `<ul class="tags">${t.map(x => `<li class="tag">${esc(x)}</li>`).join('')}</ul>` : ''; };
+// Units in the same complex share a building name, or failing that the same street address.
+const streetOf = a => String(a || '').replace(/(#|\bunit\b|\bapt\.?|\bsuite\b)\s*[\w-]+/gi, '').replace(/\s+-\s+\w+\s*,/, ',').split(',')[0];
+const groupKey = l => l.property_name ? 'n:' + norm(l.property_name) : 'a:' + norm(streetOf(l.address));
+const unitLabel = l => { const m = String(l.address || '').match(/(?:#|\bunit\b|\bapt\.?|\s-\s)\s*([\w-]+)/i); return m ? `#${m[1]}` : (l.title || 'Unit'); };
 const nameOf = l => l.property_name || l.title || l.address || 'Unnamed listing';
 const bedLabel = l => l.beds == null ? '' : `${l.beds} bedroom${Number(l.beds) === 1 ? '' : 's'}`;
 
@@ -349,18 +388,26 @@ function refineSummary() {
   if (refine.parking) bits.push('parking confirmed');
   if (refine.up) bits.push('2nd floor+');
   if (refine.company) bits.push(refine.company);
-  const count = `${deck.length} listing${deck.length === 1 ? '' : 's'}`;
+  const n = deck.reduce((s, g) => s + g.units.length, 0);
+  const count = `${n} listing${n === 1 ? '' : 's'}` + (deck.length !== n ? ` in ${deck.length} buildings` : '');
   $('#refineSummary').textContent = bits.length ? `${count} match: ${bits.join(', ')}` : `${count}, no refinements`;
 }
 
 // ---------- deck ----------
-const currentUrl = () => deck[pos]?.listing_url;
+const currentUnit = () => deck[pos]?.units[unitPos];
+const currentUrl = () => currentUnit()?.listing_url;
 
 function rebuild(keepUrl) {
-  deck = listings.filter(passes).sort(sorter);
-  const i = keepUrl ? deck.findIndex(l => l.listing_url === keepUrl) : -1;
-  if (i >= 0) pos = i; else pos = Math.min(pos, Math.max(deck.length - 1, 0));
-  if (i < 0) photoPos = 0;
+  const groups = new Map();
+  listings.filter(passes).sort(sorter).forEach(l => {
+    const k = groupKey(l);
+    if (!groups.has(k)) groups.set(k, { key: k, units: [] });
+    groups.get(k).units.push(l);
+  });
+  deck = [...groups.values()];
+  const i = keepUrl ? deck.findIndex(g => g.units.some(l => l.listing_url === keepUrl)) : -1;
+  if (i >= 0) { pos = i; unitPos = deck[i].units.findIndex(l => l.listing_url === keepUrl); }
+  else { pos = Math.min(pos, Math.max(deck.length - 1, 0)); unitPos = 0; photoPos = 0; }
   refineSummary();
   renderSlide();
   if (route === 'map') drawMarkers(false);
@@ -378,12 +425,17 @@ function renderSlide() {
     $('#deckPos').textContent = '';
     return;
   }
-  const l = deck[pos], photos = l.photos || [];
+  const g = deck[pos];
+  unitPos = Math.min(unitPos, g.units.length - 1);
+  const l = g.units[unitPos], photos = l.photos || [];
   photoPos = Math.min(photoPos, Math.max(photos.length - 1, 0));
-  const saved = isSaved(l);
+  const saved = isSaved(l), nTags = tagsOf(l.listing_url).length;
   $('#deckPos').textContent = `${pos + 1} of ${deck.length}`;
   const sub = [nameOf(l) !== l.address ? l.address : '', l.company].filter(Boolean).join(', ');
-  box.innerHTML = `<header class="slidehead"><h2>${esc(nameOf(l))}</h2>${sub ? `<p>${esc(sub)}</p>` : ''}</header>
+  const units = g.units.length > 1
+    ? `<p class="meta" style="margin-top:10px">${g.units.length} units available here</p><div class="units" role="group" aria-label="Units in this building">${g.units.map((u, j) =>
+        `<button data-act="unit" data-j="${j}" aria-pressed="${j === unitPos}">${esc(unitLabel(u))} · ${money(u.rent)} · ${esc(u.beds ?? '?')} bd${isNew(u) ? ' · New' : ''}</button>`).join('')}</div>` : '';
+  box.innerHTML = `<header class="slidehead"><h2>${esc(nameOf(l))}</h2>${sub ? `<p>${esc(sub)}</p>` : ''}${units}${tagPills(l.listing_url)}</header>
   <article class="deck" aria-label="${esc(nameOf(l))}, listing ${pos + 1} of ${deck.length}">
     <div class="stage">
       <div class="frame">
@@ -409,6 +461,7 @@ function renderSlide() {
       </div>
       <div class="acts">
         <button class="btn ${saved ? 'on' : ''}" data-act="save" aria-pressed="${saved}">${saved ? 'Saved' : 'Save'}</button>
+        <button class="btn" data-act="tags">${nTags ? `Tags (${nTags})` : 'Add tags'}</button>
         <button class="btn" data-act="sup1">Suppress for one month</button>
         <button class="btn warn" data-act="supP">Suppress permanently</button>
       </div>
@@ -418,18 +471,18 @@ function renderSlide() {
   </article>`;
   const img = $('#slidePh');
   if (img) img.onerror = () => { img.replaceWith(Object.assign(document.createElement('span'), { textContent: 'This photo is no longer available' })); };
-  const next = deck[(pos + 1) % deck.length];
+  const next = deck[(pos + 1) % deck.length]?.units[0];
   if (next?.photos?.[0]) { const pre = new Image(); pre.referrerPolicy = 'no-referrer'; pre.src = next.photos[0]; }
 }
 
 function step(d) {
   if (!deck.length) return;
-  pos = (pos + d + deck.length) % deck.length; photoPos = 0;
+  pos = (pos + d + deck.length) % deck.length; unitPos = 0; photoPos = 0;
   renderSlide();
   $('#view-slides').scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
 }
 function stepPhoto(d) {
-  const n = (deck[pos]?.photos || []).length; if (n < 2) return;
+  const n = (currentUnit()?.photos || []).length; if (n < 2) return;
   photoPos = (photoPos + d + n) % n; renderSlide();
 }
 
@@ -457,8 +510,78 @@ async function toggleSave(l) {
   rebuild(l.listing_url);
 }
 
+// ---------- tags ----------
+let tagPick = null;  // { url, selected:Set, resolve }
+function renderTagList() {
+  const names = [...new Set([...allTags(), ...tagPick.selected])].sort((a, b) => a.localeCompare(b));
+  $('#tagList').innerHTML = names.length
+    ? names.map(t => `<button type="button" data-tag="${esc(t)}" aria-pressed="${tagPick.selected.has(t)}">${esc(t)}</button>`).join('')
+    : '<p class="meta">No tags yet. Create one below.</p>';
+}
+// Opens the tag pop-up. Resolves to the chosen tags, or null if cancelled.
+function pickTags(l, { title, okLabel }) {
+  return new Promise(resolve => {
+    tagPick = { url: l.listing_url, selected: new Set(tagsOf(l.listing_url)), resolve };
+    $('#tagTitle').textContent = title;
+    $('#tagSub').textContent = `${nameOf(l)}${l.address && nameOf(l) !== l.address ? `, ${l.address}` : ''}. Tap tags to add or remove them.`;
+    $('#tagOk').textContent = okLabel;
+    $('#tagNew').value = '';
+    renderTagList();
+    $('#tagDlg').showModal();
+  });
+}
+function closeTags(result) {
+  const p = tagPick; tagPick = null;
+  $('#tagDlg').close();
+  p?.resolve(result);
+}
+$('#tagList').addEventListener('click', e => {
+  const b = e.target.closest('[data-tag]'); if (!b || !tagPick) return;
+  const t = b.dataset.tag;
+  tagPick.selected.has(t) ? tagPick.selected.delete(t) : tagPick.selected.add(t);
+  b.setAttribute('aria-pressed', tagPick.selected.has(t));
+});
+$('#tagNewForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const t = $('#tagNew').value.trim().replace(/\s+/g, ' ');
+  if (!t || !tagPick) return;
+  const existing = allTags().find(x => x.toLowerCase() === t.toLowerCase()) || t;
+  tagPick.selected.add(existing);
+  $('#tagNew').value = '';
+  renderTagList();
+  if (!allTags().includes(existing)) await rememberTag(existing);
+});
+$('#tagCancel').addEventListener('click', () => closeTags(null));
+$('#tagDlg').addEventListener('cancel', e => { e.preventDefault(); closeTags(null); });
+$('#tagOk').addEventListener('click', () => closeTags([...tagPick.selected].sort((a, b) => a.localeCompare(b))));
+
+// New tags are kept in a library row, so they stay available even before (or after) they're on a listing.
+async function rememberTag(t) {
+  const lib = marks.find(m => m.kind === 'tagged' && m.listing_url === TAG_LIBRARY);
+  const tags = [...new Set([...(lib?.tags || []), t])];
+  const row = { listing_url: TAG_LIBRARY, kind: 'tagged', title: 'Tag library', tags };
+  const { error } = await sb.from('marks').upsert(row, { onConflict: 'user_id,listing_url,kind' });
+  if (error) return toast(`Couldn’t remember that tag: ${error.message}`);
+  marks = marks.filter(m => m !== lib).concat([row]);
+}
+async function saveTags(l, tags) {
+  const row = { ...snapshot(l), kind: 'tagged', tags };
+  const { error } = await sb.from('marks').upsert(row, { onConflict: 'user_id,listing_url,kind' });
+  if (error) { toast(`Couldn’t save tags: ${error.message}`); return false; }
+  marks = marks.filter(m => !(m.kind === 'tagged' && m.listing_url === l.listing_url)).concat([row]);
+  return true;
+}
+async function editTags(l) {
+  if (!requireUser()) return;
+  const tags = await pickTags(l, { title: 'Tags', okLabel: 'Save tags' });
+  if (tags && await saveTags(l, tags)) { rebuild(l.listing_url); toast(tags.length ? `Tagged: ${tags.join(', ')}` : 'Tags removed'); }
+}
+
 async function suppress(l, month) {
   if (!requireUser()) return;
+  const tags = await pickTags(l, { title: month ? 'Suppress for one month' : 'Suppress permanently', okLabel: 'Suppress' });
+  if (!tags) return;
+  if (!await saveTags(l, tags)) return;
   let until = null;
   if (month) { const d = new Date(); d.setMonth(d.getMonth() + 1); until = isoDate(d); }
   const row = { ...snapshot(l), kind: 'suppressed', until };
@@ -477,10 +600,17 @@ async function reinstate(url) {
   toast('Reinstated. It’s back in Available Listings if it’s still listed.');
 }
 
+let supTag = '';
 function renderSuppressed() {
+  if (!user) $('#supTags').innerHTML = '';
   const box = $('#supList');
   if (!user) { box.innerHTML = `<div class="empty"><p>Sign in to see the listings you’ve suppressed.</p><button class="btn primary" data-act="signin">Sign in</button></div>`; return; }
-  const rows = activeSuppressions().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  const all = activeSuppressions().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  const used = [...new Set(all.flatMap(m => tagsOf(m.listing_url)))].sort((a, b) => a.localeCompare(b));
+  if (supTag && !used.includes(supTag)) supTag = '';
+  $('#supTags').innerHTML = used.length ? `<span class="meta">Filter by tag:</span>` + ['', ...used].map(t =>
+    `<button type="button" data-act="supTag" data-tag="${esc(t)}" aria-pressed="${t === supTag}">${t ? esc(t) : 'All'}</button>`).join('') : '';
+  const rows = supTag ? all.filter(m => tagsOf(m.listing_url).includes(supTag)) : all;
   if (!rows.length) { box.innerHTML = `<div class="empty"><p>Nothing is suppressed. Use “Suppress for one month” or “Suppress permanently” on a slide to move a listing here.</p></div>`; return; }
   const live = new Set(listings.filter(l => l.status !== 'application_pending').map(l => l.listing_url));
   box.innerHTML = rows.map(m => `<div class="suprow">
@@ -490,6 +620,7 @@ function renderSuppressed() {
         ${m.address && m.address !== m.title ? `<p>${esc(m.address)}</p>` : ''}
         <p class="meta">${esc(m.company || '')}${m.company ? '. ' : ''}${m.until ? `Suppressed until ${esc(shortDate(m.until))}.` : 'Suppressed permanently.'} ${live.has(m.listing_url) ? 'Still listed.' : 'No longer listed.'}
           <a href="${esc(safeUrl(m.listing_url))}" target="_blank" rel="noopener">Open the listing</a></p>
+        ${tagPills(m.listing_url)}
       </div>
       <button class="btn" data-act="reinstate" data-url="${esc(m.listing_url)}">Reinstate</button>
     </div>`).join('');
@@ -516,13 +647,16 @@ function drawMarkers(fit) {
   if (!map) return;
   layer.clearLayers();
   const pts = [], missing = [];
-  deck.forEach((l, i) => {
-    const c = coords(l);
+  deck.forEach((g, i) => {
+    const l = g.units[0];
+    const c = g.units.map(coords).find(Boolean);
     if (!c) { missing.push(l); return; }
-    const strong = l.match === 'strong';
-    const m = L.circleMarker(c, { radius: 10, weight: 2, color: cssVar('--surface'), fillColor: strong ? cssVar('--pass') : cssVar('--maybe'), fillOpacity: .95 });
+    const strong = g.units.some(u => u.match === 'strong');
+    const rents = g.units.map(u => u.rent).filter(r => r != null);
+    const rentTxt = !rents.length ? money(null) : Math.min(...rents) === Math.max(...rents) ? `${money(rents[0])}/mo` : `${money(Math.min(...rents))}–${money(Math.max(...rents))}/mo`;
+    const m = L.circleMarker(c, { radius: g.units.length > 1 ? 13 : 10, weight: 2, color: cssVar('--surface'), fillColor: strong ? cssVar('--pass') : cssVar('--maybe'), fillOpacity: .95 });
     m.bindPopup(`<div class="pop">${l.photos?.[0] ? `<img src="${esc(l.photos[0])}" alt="" referrerpolicy="no-referrer">` : ''}
-      <b>${esc(nameOf(l))}</b><br>${money(l.rent)}/mo<br>${nameOf(l) !== l.address ? `${esc(l.address || '')}<br>` : ''}${esc(bedLabel(l))}${l.company ? `, ${esc(l.company)}` : ''}<br>
+      <b>${esc(nameOf(l))}</b><br>${rentTxt}${g.units.length > 1 ? `, ${g.units.length} units` : ''}<br>${nameOf(l) !== l.address ? `${esc(streetOf(l.address) || '')}<br>` : ''}${g.units.length > 1 ? '' : esc(bedLabel(l))}${l.company ? `${g.units.length > 1 ? '' : ', '}${esc(l.company)}` : ''}<br>
       <button class="btn" style="margin-top:8px" data-act="goSlide" data-i="${i}">View in Available Listings</button></div>`);
     m.addTo(layer); pts.push(c);
   });
@@ -530,7 +664,7 @@ function drawMarkers(fit) {
   const unplaceable = missing.filter(l => geo[geoKey(l)] === 'none' || !l.address);
   const pending = missing.length - unplaceable.length;
   $('#mapNote').textContent = [
-    `${pts.length} of ${deck.length} listing${deck.length === 1 ? '' : 's'} on the map. Green is a strong match, yellow is worth a check.`,
+    `${pts.length} of ${deck.length} building${deck.length === 1 ? '' : 's'} on the map. Green is a strong match, yellow is worth a check.`,
     pending ? `Finding ${pending} more address${pending === 1 ? '' : 'es'}…` : '',
     unplaceable.length ? `Couldn’t place: ${unplaceable.map(l => l.address || l.title || 'a listing with no address').join('; ')}.` : ''
   ].filter(Boolean).join(' ');
@@ -539,7 +673,7 @@ function drawMarkers(fit) {
 
 async function geocodeMissing() {
   if (geocoding) return; geocoding = true;
-  for (const l of deck) {
+  for (const l of deck.filter(g => !g.units.some(coords)).map(g => g.units[0])) {
     if (route !== 'map') break;
     if (coords(l) || !l.address || geo[geoKey(l)] === 'none') continue;
     try {
@@ -599,8 +733,11 @@ $('#signinCancel').addEventListener('click', () => $('#signin').close());
 // ---------- events ----------
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
-  const l = deck[pos];
+  const l = currentUnit();
   switch (b.dataset.act) {
+    case 'unit': unitPos = +b.dataset.j; photoPos = 0; return renderSlide();
+    case 'tags': return l && editTags(l);
+    case 'supTag': supTag = b.dataset.tag; return renderSuppressed();
     case 'prevPhoto': return stepPhoto(-1);
     case 'nextPhoto': return stepPhoto(1);
     case 'photo': photoPos = +b.dataset.j; return renderSlide();
@@ -609,7 +746,7 @@ document.addEventListener('click', async e => {
     case 'supP': return l && suppress(l, false);
     case 'reinstate': return reinstate(b.dataset.url);
     case 'reset': refine = { ...DEFAULTS }; local.set('refine', refine); syncRefineControls(); return rebuild();
-    case 'goSlide': pos = +b.dataset.i; photoPos = 0; location.hash = 'slides'; return;
+    case 'goSlide': pos = +b.dataset.i; unitPos = 0; photoPos = 0; location.hash = 'slides'; return;
     case 'signin': $('#signinMsg').textContent = 'Signing in lets you save and suppress listings, and keeps them in sync between your devices.'; return $('#signin').showModal();
     case 'signout': await sb.auth.signOut(); return;
   }
