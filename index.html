@@ -152,6 +152,7 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
       <a href="#slides" data-route="slides">Available Listings</a>
       <a href="#map" data-route="map">Map</a>
       <a href="#suppressed" data-route="suppressed">Suppressed</a>
+      <a href="#saved" data-route="saved">Saved</a>
     </nav>
     <div class="auth" id="authBox"></div>
   </header>
@@ -219,6 +220,11 @@ dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
   <section id="view-map" hidden>
     <div id="mapEl" role="region" aria-label="Map of listings"></div>
     <p class="mapnote" id="mapNote"></p>
+  </section>
+
+  <section id="view-saved" hidden>
+    <div class="tagfilter" id="savedTags"></div>
+    <div class="sup" id="savedList"></div>
   </section>
 
   <section id="view-suppressed" hidden>
@@ -412,6 +418,7 @@ function rebuild(keepUrl) {
   renderSlide();
   if (route === 'map') drawMarkers(false);
   if (route === 'suppressed') renderSuppressed();
+  if (route === 'saved') renderSaved();
 }
 
 function renderSlide() {
@@ -626,6 +633,41 @@ function renderSuppressed() {
     </div>`).join('');
 }
 
+let savedTag = '';
+function renderSaved() {
+  if (!user) $('#savedTags').innerHTML = '';
+  const box = $('#savedList');
+  if (!user) { box.innerHTML = `<div class="empty"><p>Sign in to see the listings you’ve saved.</p><button class="btn primary" data-act="signin">Sign in</button></div>`; return; }
+  const all = marks.filter(m => m.kind === 'saved').sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  const used = [...new Set(all.flatMap(m => tagsOf(m.listing_url)))].sort((a, b) => a.localeCompare(b));
+  if (savedTag && !used.includes(savedTag)) savedTag = '';
+  $('#savedTags').innerHTML = used.length ? `<span class="meta">Filter by tag:</span>` + ['', ...used].map(t =>
+    `<button type="button" data-act="savedTag" data-tag="${esc(t)}" aria-pressed="${t === savedTag}">${t ? esc(t) : 'All'}</button>`).join('') : '';
+  const rows = savedTag ? all.filter(m => tagsOf(m.listing_url).includes(savedTag)) : all;
+  if (!rows.length) { box.innerHTML = `<div class="empty"><p>Nothing is saved yet. Use “Save” on a slide to keep a listing here.</p></div>`; return; }
+  const byUrl = new Map(listings.map(l => [l.listing_url, l]));
+  const stateOf = u => { const l = byUrl.get(u); if (!l) return 'No longer listed.'; if (l.status === 'application_pending') return 'Application pending.'; return isSuppressed(l) ? 'Still listed (suppressed).' : 'Still listed.'; };
+  box.innerHTML = rows.map(m => { const l = byUrl.get(m.listing_url); return `<div class="suprow">
+      ${m.photo ? `<img src="${esc(m.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<div class="ph"></div>'}
+      <div>
+        <p><b>${esc(m.title || m.address || m.listing_url)}</b>${l && l.rent ? ` · $${Number(l.rent).toLocaleString()}` : ''}</p>
+        ${m.address && m.address !== m.title ? `<p>${esc(m.address)}</p>` : ''}
+        <p class="meta">${esc(m.company || '')}${m.company ? '. ' : ''}${stateOf(m.listing_url)}
+          <a href="${esc(safeUrl(m.listing_url))}" target="_blank" rel="noopener">Open the listing</a></p>
+        ${tagPills(m.listing_url)}
+      </div>
+      <button class="btn" data-act="unsave" data-url="${esc(m.listing_url)}">Remove</button>
+    </div>`; }).join('');
+}
+async function unsave(url) {
+  if (!requireUser()) return;
+  const { error } = await sb.from('marks').delete().eq('listing_url', url).eq('kind', 'saved');
+  if (error) return toast(`Couldn’t remove: ${error.message}`);
+  marks = marks.filter(m => !(m.kind === 'saved' && m.listing_url === url));
+  rebuild(currentUrl());
+  toast('Removed from Saved.');
+}
+
 // ---------- map ----------
 let map, layer, geocoding = false, fitted = false;
 const geo = local.get('geocache', {});
@@ -689,7 +731,7 @@ async function geocodeMissing() {
 }
 
 // ---------- routing ----------
-const TITLES = { slides: 'Available Listings', map: 'Map', suppressed: 'Suppressed' };
+const TITLES = { slides: 'Available Listings', map: 'Map', suppressed: 'Suppressed', saved: 'Saved' };
 function go(r) {
   route = TITLES[r] ? r : 'slides';
   $$('.tabs a').forEach(a => a.dataset.route === route ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
@@ -698,9 +740,11 @@ function go(r) {
   $('#view-slides').hidden = route !== 'slides';
   $('#view-map').hidden = route !== 'map';
   $('#view-suppressed').hidden = route !== 'suppressed';
-  $('#refine').hidden = route === 'suppressed';
+  $('#view-saved').hidden = route !== 'saved';
+  $('#refine').hidden = route === 'suppressed' || route === 'saved';
   if (route === 'map') { initMap(); setTimeout(() => { map?.invalidateSize(); drawMarkers(false); }, 0); }
   if (route === 'suppressed') renderSuppressed();
+  if (route === 'saved') renderSaved();
 }
 window.addEventListener('hashchange', () => { if (!/access_token|error_description/.test(location.hash)) go(location.hash.slice(1)); });
 
@@ -737,6 +781,8 @@ document.addEventListener('click', async e => {
   switch (b.dataset.act) {
     case 'unit': unitPos = +b.dataset.j; photoPos = 0; return renderSlide();
     case 'tags': return l && editTags(l);
+    case 'savedTag': savedTag = b.dataset.tag; return renderSaved();
+    case 'unsave': return unsave(b.dataset.url);
     case 'supTag': supTag = b.dataset.tag; return renderSuppressed();
     case 'prevPhoto': return stepPhoto(-1);
     case 'nextPhoto': return stepPhoto(1);
